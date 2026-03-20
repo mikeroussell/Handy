@@ -960,4 +960,62 @@ mod tests {
         );
         assert_eq!(result, "send it to sales");
     }
+
+    #[test]
+    fn test_false_start_basic() {
+        let result = collapse_self_corrections(
+            "We should probably... We need to ship by Friday",
+            &None,
+        );
+        assert_eq!(result, "We need to ship by Friday");
+    }
+
+    #[test]
+    fn test_false_start_longer_first_clause_preserved() {
+        // First clause is longer — not a false start, it's emphasis or elaboration
+        let result = collapse_self_corrections(
+            "We absolutely need to ship this week, we need to ship",
+            &None,
+        );
+        assert_eq!(result, "We absolutely need to ship this week, we need to ship");
+    }
+
+    #[test]
+    fn test_false_start_different_opener_preserved() {
+        let result = collapse_self_corrections(
+            "The budget is tight, we need more resources",
+            &None,
+        );
+        assert_eq!(result, "The budget is tight, we need more resources");
+    }
+
+    #[test]
+    fn test_false_start_with_the() {
+        let result = collapse_self_corrections(
+            "The report, the quarterly report is ready",
+            &None,
+        );
+        assert_eq!(result, "the quarterly report is ready");
+    }
+
+    #[test]
+    fn test_mixed_marker_and_false_start() {
+        // "I mean" removes "We should", then false-start collapses the repeated opener
+        let result = collapse_self_corrections(
+            "We should, I mean we need to, we need to ship by Friday",
+            &None,
+        );
+        assert_eq!(result, "we need to ship by Friday");
+    }
+
+    #[test]
+    fn test_collapse_marker_multi_sentence_fallback() {
+        // Fallback marker detection with no punctuation removes everything before the marker.
+        // For v1 this is acceptable since transcription fragments are typically single sentences.
+        let result = collapse_self_corrections(
+            "The project is on track I mean we need more time",
+            &None,
+        );
+        assert_eq!(result, "we need more time");
+    }
 }
