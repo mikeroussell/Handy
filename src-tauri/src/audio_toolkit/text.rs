@@ -1516,4 +1516,52 @@ mod tests {
         let result = normalize_numbers("three thousand");
         assert_eq!(result, "3000");
     }
+
+    #[test]
+    fn test_normalize_currency_overrides_threshold() {
+        let result = normalize_numbers("five dollars");
+        assert_eq!(result, "$5");
+    }
+
+    #[test]
+    fn test_normalize_percentage_overrides_threshold() {
+        let result = normalize_numbers("three percent");
+        assert_eq!(result, "3%");
+    }
+
+    #[test]
+    fn test_normalize_currency_above_threshold() {
+        let result = normalize_numbers("twenty bucks");
+        assert_eq!(result, "$20");
+    }
+
+    #[test]
+    fn test_normalize_decimal() {
+        let result = normalize_numbers("two point five");
+        assert_eq!(result, "2.5");
+    }
+
+    #[test]
+    fn test_normalize_ordinal_above_threshold() {
+        let result = normalize_numbers("twenty third");
+        assert_eq!(result, "23rd");
+    }
+
+    #[test]
+    fn test_normalize_ordinal_under_threshold() {
+        let result = normalize_numbers("first place");
+        assert_eq!(result, "first place");
+    }
+
+    #[test]
+    fn test_normalize_punctuation_preserved() {
+        let result = normalize_numbers("twenty three,");
+        assert_eq!(result, "23,");
+    }
+
+    #[test]
+    fn test_normalize_full_sentence() {
+        let result = normalize_numbers("I need twenty three items at five dollars and three percent discount");
+        assert_eq!(result, "I need 23 items at $5 and 3% discount");
+    }
 }
