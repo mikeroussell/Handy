@@ -472,8 +472,25 @@ pub fn collapse_self_corrections(
 fn build_cardinal_lookup() -> HashMap<&'static str, u64> {
     let mut map = HashMap::new();
     let units = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
         "nineteen",
     ];
     for (i, word) in units.iter().enumerate() {
@@ -656,10 +673,8 @@ pub fn normalize_numbers(text: &str) -> String {
                     if val <= 9 {
                         frac_digits.push_str(&val.to_string());
                         if !fs.is_empty() {
-                            result.push(format!(
-                                "{}{}.{}{}",
-                                prefix_punct, int_str, frac_digits, fs
-                            ));
+                            result
+                                .push(format!("{}{}.{}{}", prefix_punct, int_str, frac_digits, fs));
                             accumulated = 0;
                             current_group = 0;
                             word_count = 0;
@@ -1561,7 +1576,25 @@ mod tests {
 
     #[test]
     fn test_normalize_full_sentence() {
-        let result = normalize_numbers("I need twenty three items at five dollars and three percent discount");
+        let result = normalize_numbers(
+            "I need twenty three items at five dollars and three percent discount",
+        );
         assert_eq!(result, "I need 23 items at $5 and 3% discount");
+    }
+
+    #[test]
+    fn test_integration_full_pipeline() {
+        // Simulate the pipeline: filler removal -> self-correction -> number normalization
+        let raw = "I need, uh, twenty three, I mean thirty five items at five dollars";
+
+        // Step 1: filler removal
+        let after_filler = filter_transcription_output(raw, "en", &None);
+
+        // Step 2: self-correction
+        let after_correction = collapse_self_corrections(&after_filler, &None);
+
+        // Step 3: number normalization
+        let result = normalize_numbers(&after_correction);
+        assert_eq!(result, "I need, 35 items at $5");
     }
 }
