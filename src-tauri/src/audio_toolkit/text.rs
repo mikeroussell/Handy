@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use natural::phonetics::soundex;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -464,6 +466,439 @@ pub fn collapse_self_corrections(
 
     // Pass 2: false-start detection
     collapse_false_starts(&after_markers)
+}
+
+/// Builds a lookup table mapping English number words to their cardinal values.
+fn build_cardinal_lookup() -> HashMap<&'static str, u64> {
+    let mut map = HashMap::new();
+    let units = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+        "nineteen",
+    ];
+    for (i, word) in units.iter().enumerate() {
+        map.insert(*word, i as u64);
+    }
+    let tens = [
+        ("twenty", 20u64),
+        ("thirty", 30),
+        ("forty", 40),
+        ("fifty", 50),
+        ("sixty", 60),
+        ("seventy", 70),
+        ("eighty", 80),
+        ("ninety", 90),
+    ];
+    for (word, val) in tens {
+        map.insert(word, val);
+    }
+    map
+}
+
+/// Builds a lookup table mapping ordinal words to (cardinal_value, suffix).
+fn build_ordinal_lookup() -> HashMap<&'static str, (u64, &'static str)> {
+    let mut map = HashMap::new();
+    map.insert("first", (1u64, "st"));
+    map.insert("second", (2, "nd"));
+    map.insert("third", (3, "rd"));
+    map.insert("fourth", (4, "th"));
+    map.insert("fifth", (5, "th"));
+    map.insert("sixth", (6, "th"));
+    map.insert("seventh", (7, "th"));
+    map.insert("eighth", (8, "th"));
+    map.insert("ninth", (9, "th"));
+    map.insert("tenth", (10, "th"));
+    map.insert("eleventh", (11, "th"));
+    map.insert("twelfth", (12, "th"));
+    map.insert("thirteenth", (13, "th"));
+    map.insert("fourteenth", (14, "th"));
+    map.insert("fifteenth", (15, "th"));
+    map.insert("sixteenth", (16, "th"));
+    map.insert("seventeenth", (17, "th"));
+    map.insert("eighteenth", (18, "th"));
+    map.insert("nineteenth", (19, "th"));
+    map.insert("twentieth", (20, "th"));
+    map.insert("thirtieth", (30, "th"));
+    map.insert("fortieth", (40, "th"));
+    map.insert("fiftieth", (50, "th"));
+    map.insert("sixtieth", (60, "th"));
+    map.insert("seventieth", (70, "th"));
+    map.insert("eightieth", (80, "th"));
+    map.insert("ninetieth", (90, "th"));
+    map
+}
+
+/// Returns true if the word is a magnitude multiplier.
+fn magnitude_value(word: &str) -> Option<u64> {
+    match word {
+        "hundred" => Some(100),
+        "thousand" => Some(1_000),
+        "million" => Some(1_000_000),
+        "billion" => Some(1_000_000_000),
+        _ => None,
+    }
+}
+
+/// Determines the ordinal suffix for a number.
+fn ordinal_suffix(n: u64) -> &'static str {
+    let last_two = n % 100;
+    let last_one = n % 10;
+    if (11..=13).contains(&last_two) {
+        "th"
+    } else {
+        match last_one {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        }
+    }
+}
+
+/// Flushes the number accumulator buffer into a string.
+/// Applies the threshold rule: single-word numbers 0-10 are preserved as the original word
+/// unless `force_convert` is true (pattern trigger overrides threshold).
+fn flush_number_buffer(
+    accumulated: u64,
+    current_group: u64,
+    word_count: usize,
+    original_words: &[String],
+    is_ordinal: bool,
+    force_convert: bool,
+) -> String {
+    let total = accumulated + current_group;
+
+    // Threshold: single-word numbers 0-10 preserved unless forced
+    if !force_convert && word_count == 1 && total <= 10 {
+        return original_words.join(" ");
+    }
+
+    if is_ordinal {
+        format!("{}{}", total, ordinal_suffix(total))
+    } else {
+        total.to_string()
+    }
+}
+
+/// Converts spelled-out numbers to digit form in transcribed text.
+///
+/// Supports: cardinals ("twenty three" -> "23"), ordinals ("twenty third" -> "23rd"),
+/// currency ("five dollars" -> "$5"), percentages ("three percent" -> "3%"),
+/// and decimals ("two point five" -> "2.5").
+///
+/// Single-word numbers 0-10 are preserved as words unless followed by a pattern
+/// trigger (currency, percentage).
+#[allow(unused_assignments)]
+pub fn normalize_numbers(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let cardinals = build_cardinal_lookup();
+    let ordinals = build_ordinal_lookup();
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut result: Vec<String> = Vec::new();
+
+    // Number accumulator state
+    let mut accumulated: u64 = 0;
+    let mut current_group: u64 = 0;
+    let mut word_count: usize = 0;
+    let mut original_words: Vec<String> = Vec::new();
+    let mut is_ordinal = false;
+    let mut in_number = false;
+    let mut pending_and = false;
+
+    let mut i = 0;
+    while i < words.len() {
+        let raw_word = words[i];
+        let (prefix_punct, suffix_punct) = extract_punctuation(raw_word);
+        let core = &raw_word[prefix_punct.len()..raw_word.len() - suffix_punct.len()];
+        let word_lower = core.to_lowercase();
+
+        // Check if this word is "and" (transparent between number words)
+        if word_lower == "and" && in_number {
+            if i + 1 < words.len() {
+                let next_raw = words[i + 1];
+                let (np, ns) = extract_punctuation(next_raw);
+                let next_core = &next_raw[np.len()..next_raw.len() - ns.len()];
+                let next_lower = next_core.to_lowercase();
+                if cardinals.contains_key(next_lower.as_str())
+                    || ordinals.contains_key(next_lower.as_str())
+                    || magnitude_value(&next_lower).is_some()
+                {
+                    pending_and = true;
+                    i += 1;
+                    continue;
+                }
+            }
+            pending_and = false;
+        }
+
+        // Check if word is "point" (decimal separator)
+        if word_lower == "point" && in_number {
+            let int_str = flush_number_buffer(
+                accumulated,
+                current_group,
+                word_count,
+                &original_words,
+                false,
+                true,
+            );
+            let mut frac_digits = String::new();
+            i += 1;
+            while i < words.len() {
+                let fraw = words[i];
+                let (fp, fs) = extract_punctuation(fraw);
+                let fcore = &fraw[fp.len()..fraw.len() - fs.len()];
+                let flower = fcore.to_lowercase();
+                if let Some(&val) = cardinals.get(flower.as_str()) {
+                    if val <= 9 {
+                        frac_digits.push_str(&val.to_string());
+                        if !fs.is_empty() {
+                            result.push(format!(
+                                "{}{}.{}{}",
+                                prefix_punct, int_str, frac_digits, fs
+                            ));
+                            accumulated = 0;
+                            current_group = 0;
+                            word_count = 0;
+                            original_words.clear();
+                            is_ordinal = false;
+                            in_number = false;
+                            pending_and = false;
+                            i += 1;
+                            continue;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+                break;
+            }
+            if frac_digits.is_empty() {
+                frac_digits.push('0');
+            }
+            result.push(format!("{}{}.{}", prefix_punct, int_str, frac_digits));
+            accumulated = 0;
+            current_group = 0;
+            word_count = 0;
+            original_words.clear();
+            is_ordinal = false;
+            in_number = false;
+            pending_and = false;
+            continue;
+        }
+
+        // Try to match as a cardinal
+        if let Some(&val) = cardinals.get(word_lower.as_str()) {
+            if !in_number {
+                in_number = true;
+                accumulated = 0;
+                current_group = 0;
+                word_count = 0;
+                original_words.clear();
+                is_ordinal = false;
+            }
+            pending_and = false;
+            current_group += val;
+            word_count += 1;
+            original_words.push(format!("{}{}{}", prefix_punct, core, suffix_punct));
+
+            if !suffix_punct.is_empty() {
+                let num_str = flush_number_buffer(
+                    accumulated,
+                    current_group,
+                    word_count,
+                    &original_words,
+                    is_ordinal,
+                    false,
+                );
+                result.push(format!("{}{}", num_str, suffix_punct));
+                accumulated = 0;
+                current_group = 0;
+                word_count = 0;
+                original_words.clear();
+                is_ordinal = false;
+                in_number = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Try to match as an ordinal
+        if let Some(&(val, _suffix)) = ordinals.get(word_lower.as_str()) {
+            if !in_number {
+                in_number = true;
+                accumulated = 0;
+                current_group = 0;
+                word_count = 0;
+                original_words.clear();
+            }
+            pending_and = false;
+            current_group += val;
+            word_count += 1;
+            original_words.push(format!("{}{}{}", prefix_punct, core, suffix_punct));
+            is_ordinal = true;
+
+            let total = accumulated + current_group;
+            if word_count == 1 && total <= 10 {
+                result.push(format!("{}{}{}", prefix_punct, core, suffix_punct));
+            } else {
+                result.push(format!(
+                    "{}{}{}{}",
+                    prefix_punct,
+                    total,
+                    ordinal_suffix(total),
+                    suffix_punct
+                ));
+            }
+            accumulated = 0;
+            current_group = 0;
+            word_count = 0;
+            original_words.clear();
+            is_ordinal = false;
+            in_number = false;
+            i += 1;
+            continue;
+        }
+
+        // Try to match as a magnitude
+        if let Some(mag) = magnitude_value(&word_lower) {
+            if in_number {
+                pending_and = false;
+                word_count += 1;
+                original_words.push(core.to_string());
+                if mag == 100 {
+                    if current_group == 0 {
+                        current_group = 1;
+                    }
+                    current_group *= mag;
+                } else {
+                    if current_group == 0 {
+                        current_group = 1;
+                    }
+                    accumulated += current_group * mag;
+                    current_group = 0;
+                }
+                i += 1;
+                continue;
+            }
+        }
+
+        // Check for pattern triggers
+        if in_number
+            && (word_lower == "dollars"
+                || word_lower == "dollar"
+                || word_lower == "bucks"
+                || word_lower == "buck")
+        {
+            pending_and = false;
+            let num_str = flush_number_buffer(
+                accumulated,
+                current_group,
+                word_count,
+                &original_words,
+                false,
+                true,
+            );
+            result.push(format!("{}${}{}", prefix_punct, num_str, suffix_punct));
+            accumulated = 0;
+            current_group = 0;
+            word_count = 0;
+            original_words.clear();
+            is_ordinal = false;
+            in_number = false;
+            i += 1;
+            continue;
+        }
+
+        if in_number && word_lower == "percent" {
+            pending_and = false;
+            let num_str = flush_number_buffer(
+                accumulated,
+                current_group,
+                word_count,
+                &original_words,
+                false,
+                true,
+            );
+            result.push(format!("{}{}%{}", prefix_punct, num_str, suffix_punct));
+            accumulated = 0;
+            current_group = 0;
+            word_count = 0;
+            original_words.clear();
+            is_ordinal = false;
+            in_number = false;
+            i += 1;
+            continue;
+        }
+
+        // Non-number word: flush buffer if active
+        if in_number {
+            if pending_and {
+                let num_str = flush_number_buffer(
+                    accumulated,
+                    current_group,
+                    word_count,
+                    &original_words,
+                    is_ordinal,
+                    false,
+                );
+                result.push(num_str);
+                result.push("and".to_string());
+                pending_and = false;
+            } else {
+                let num_str = flush_number_buffer(
+                    accumulated,
+                    current_group,
+                    word_count,
+                    &original_words,
+                    is_ordinal,
+                    false,
+                );
+                result.push(num_str);
+            }
+            accumulated = 0;
+            current_group = 0;
+            word_count = 0;
+            original_words.clear();
+            is_ordinal = false;
+            in_number = false;
+        }
+
+        result.push(raw_word.to_string());
+        i += 1;
+    }
+
+    // Flush remaining buffer
+    if in_number {
+        if pending_and {
+            let num_str = flush_number_buffer(
+                accumulated,
+                current_group,
+                word_count,
+                &original_words,
+                is_ordinal,
+                false,
+            );
+            result.push(num_str);
+            result.push("and".to_string());
+        } else {
+            let num_str = flush_number_buffer(
+                accumulated,
+                current_group,
+                word_count,
+                &original_words,
+                is_ordinal,
+                false,
+            );
+            result.push(num_str);
+        }
+    }
+
+    result.join(" ")
 }
 
 /// Applies exact word-boundary replacements to transcription text.
@@ -1014,5 +1449,71 @@ mod tests {
         // Step 2: self-correction
         let result = collapse_self_corrections(&after_filler, &None);
         assert_eq!(result, "send it to sales");
+    }
+
+    #[test]
+    fn test_normalize_multi_word_cardinal() {
+        let result = normalize_numbers("twenty three");
+        assert_eq!(result, "23");
+    }
+
+    #[test]
+    fn test_normalize_large_cardinal() {
+        let result = normalize_numbers("two thousand three hundred forty five");
+        assert_eq!(result, "2345");
+    }
+
+    #[test]
+    fn test_normalize_and_ignored() {
+        let result = normalize_numbers("one hundred and fifty");
+        assert_eq!(result, "150");
+    }
+
+    #[test]
+    fn test_normalize_threshold_preserved() {
+        let result = normalize_numbers("I have three dogs");
+        assert_eq!(result, "I have three dogs");
+    }
+
+    #[test]
+    fn test_normalize_threshold_zero_preserved() {
+        let result = normalize_numbers("I have zero issues");
+        assert_eq!(result, "I have zero issues");
+    }
+
+    #[test]
+    fn test_normalize_threshold_converted() {
+        let result = normalize_numbers("I have twelve dogs");
+        assert_eq!(result, "I have 12 dogs");
+    }
+
+    #[test]
+    fn test_normalize_mixed_text() {
+        let result = normalize_numbers("I need twenty three items");
+        assert_eq!(result, "I need 23 items");
+    }
+
+    #[test]
+    fn test_normalize_no_numbers_passthrough() {
+        let result = normalize_numbers("hello world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_normalize_empty_passthrough() {
+        let result = normalize_numbers("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_normalize_hundred() {
+        let result = normalize_numbers("two hundred");
+        assert_eq!(result, "200");
+    }
+
+    #[test]
+    fn test_normalize_thousand() {
+        let result = normalize_numbers("three thousand");
+        assert_eq!(result, "3000");
     }
 }
