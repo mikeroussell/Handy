@@ -480,12 +480,17 @@ pub fn apply_word_replacements(text: &str, replacements: &[WordReplacement]) -> 
     for replacement in replacements {
         let escaped = regex::escape(&replacement.from);
         if let Ok(pattern) = Regex::new(&format!(r"(?i)\b{}\b", escaped)) {
-            result = pattern.replace_all(&result, replacement.to.as_str()).to_string();
+            result = pattern
+                .replace_all(&result, replacement.to.as_str())
+                .to_string();
         }
     }
 
     // Clean up any double spaces from replacements
-    MULTI_SPACE_PATTERN.replace_all(&result, " ").trim().to_string()
+    MULTI_SPACE_PATTERN
+        .replace_all(&result, " ")
+        .trim()
+        .to_string()
 }
 
 /// Filters transcription output by removing filler words and stutter artifacts.
@@ -805,8 +810,14 @@ mod tests {
         use crate::settings::WordReplacement;
         let text = "I wanna go but I gotta stay";
         let replacements = vec![
-            WordReplacement { from: "wanna".to_string(), to: "want to".to_string() },
-            WordReplacement { from: "gotta".to_string(), to: "got to".to_string() },
+            WordReplacement {
+                from: "wanna".to_string(),
+                to: "want to".to_string(),
+            },
+            WordReplacement {
+                from: "gotta".to_string(),
+                to: "got to".to_string(),
+            },
         ];
         let result = apply_word_replacements(text, &replacements);
         assert_eq!(result, "I want to go but I got to stay");
@@ -860,84 +871,62 @@ mod tests {
 
     #[test]
     fn test_collapse_marker_basic() {
-        let result = collapse_self_corrections(
-            "Send it to marketing, I mean send it to sales",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("Send it to marketing, I mean send it to sales", &None);
         assert_eq!(result, "send it to sales");
     }
 
     #[test]
     fn test_collapse_marker_or_rather() {
-        let result = collapse_self_corrections(
-            "The meeting is Tuesday, or rather it's Wednesday",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("The meeting is Tuesday, or rather it's Wednesday", &None);
         assert_eq!(result, "it's Wednesday");
     }
 
     #[test]
     fn test_collapse_marker_scratch_that() {
-        let result = collapse_self_corrections(
-            "Open the file, scratch that, close the file",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("Open the file, scratch that, close the file", &None);
         assert_eq!(result, "close the file");
     }
 
     #[test]
     fn test_collapse_marker_case_insensitive() {
-        let result = collapse_self_corrections(
-            "Go left, I Mean go right",
-            &None,
-        );
+        let result = collapse_self_corrections("Go left, I Mean go right", &None);
         assert_eq!(result, "go right");
     }
 
     #[test]
     fn test_collapse_marker_at_start_is_noop() {
-        let result = collapse_self_corrections(
-            "I mean this is the right way",
-            &None,
-        );
+        let result = collapse_self_corrections("I mean this is the right way", &None);
         assert_eq!(result, "I mean this is the right way");
     }
 
     #[test]
     fn test_collapse_marker_multiple() {
-        let result = collapse_self_corrections(
-            "Go up, no wait go down, I mean go left",
-            &None,
-        );
+        let result = collapse_self_corrections("Go up, no wait go down, I mean go left", &None);
         assert_eq!(result, "go left");
     }
 
     #[test]
     fn test_collapse_marker_no_punctuation_fallback() {
-        let result = collapse_self_corrections(
-            "Send it to marketing I mean send it to sales",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("Send it to marketing I mean send it to sales", &None);
         assert_eq!(result, "send it to sales");
     }
 
     #[test]
     fn test_collapse_marker_custom_markers() {
         let custom = Some(vec!["oops".to_string()]);
-        let result = collapse_self_corrections(
-            "Take the left turn, oops take the right turn",
-            &custom,
-        );
+        let result =
+            collapse_self_corrections("Take the left turn, oops take the right turn", &custom);
         assert_eq!(result, "take the right turn");
     }
 
     #[test]
     fn test_collapse_marker_empty_custom_disables_markers() {
         let custom = Some(vec![]);
-        let result = collapse_self_corrections(
-            "Go left, I mean go right",
-            &custom,
-        );
+        let result = collapse_self_corrections("Go left, I mean go right", &custom);
         // Marker detection disabled, but false-start detection still runs.
         // These clauses don't share an opener so false-start won't fire either.
         assert_eq!(result, "Go left, I mean go right");
@@ -945,10 +934,7 @@ mod tests {
 
     #[test]
     fn test_collapse_no_correction_passthrough() {
-        let result = collapse_self_corrections(
-            "This is a perfectly normal sentence.",
-            &None,
-        );
+        let result = collapse_self_corrections("This is a perfectly normal sentence.", &None);
         assert_eq!(result, "This is a perfectly normal sentence.");
     }
 
@@ -960,19 +946,15 @@ mod tests {
 
     #[test]
     fn test_collapse_marker_with_em_dash() {
-        let result = collapse_self_corrections(
-            "Send it to marketing\u{2014}I mean send it to sales",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("Send it to marketing\u{2014}I mean send it to sales", &None);
         assert_eq!(result, "send it to sales");
     }
 
     #[test]
     fn test_false_start_basic() {
-        let result = collapse_self_corrections(
-            "We should probably... We need to ship by Friday",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("We should probably... We need to ship by Friday", &None);
         assert_eq!(result, "We need to ship by Friday");
     }
 
@@ -983,24 +965,22 @@ mod tests {
             "We absolutely need to ship this week, we need to ship",
             &None,
         );
-        assert_eq!(result, "We absolutely need to ship this week, we need to ship");
+        assert_eq!(
+            result,
+            "We absolutely need to ship this week, we need to ship"
+        );
     }
 
     #[test]
     fn test_false_start_different_opener_preserved() {
-        let result = collapse_self_corrections(
-            "The budget is tight, we need more resources",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("The budget is tight, we need more resources", &None);
         assert_eq!(result, "The budget is tight, we need more resources");
     }
 
     #[test]
     fn test_false_start_with_the() {
-        let result = collapse_self_corrections(
-            "The report, the quarterly report is ready",
-            &None,
-        );
+        let result = collapse_self_corrections("The report, the quarterly report is ready", &None);
         assert_eq!(result, "the quarterly report is ready");
     }
 
@@ -1018,10 +998,21 @@ mod tests {
     fn test_collapse_marker_multi_sentence_fallback() {
         // Fallback marker detection with no punctuation removes everything before the marker.
         // For v1 this is acceptable since transcription fragments are typically single sentences.
-        let result = collapse_self_corrections(
-            "The project is on track I mean we need more time",
-            &None,
-        );
+        let result =
+            collapse_self_corrections("The project is on track I mean we need more time", &None);
         assert_eq!(result, "we need more time");
+    }
+
+    #[test]
+    fn test_integration_filler_then_self_correction() {
+        // Simulate the pipeline: filler removal first, then self-correction
+        let raw = "Send it to marketing, uh, I mean send it to sales";
+
+        // Step 1: filler removal (as the pipeline does)
+        let after_filler = filter_transcription_output(raw, "en", &None);
+
+        // Step 2: self-correction
+        let result = collapse_self_corrections(&after_filler, &None);
+        assert_eq!(result, "send it to sales");
     }
 }
