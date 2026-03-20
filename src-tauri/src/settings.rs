@@ -405,6 +405,8 @@ pub struct AppSettings {
     pub self_correction_enabled: bool,
     #[serde(default)]
     pub custom_correction_markers: Option<Vec<String>>,
+    #[serde(default = "default_number_normalization_enabled")]
+    pub number_normalization_enabled: bool,
     #[serde(default)]
     pub whisper_accelerator: WhisperAcceleratorSetting,
     #[serde(default)]
@@ -422,6 +424,10 @@ fn default_always_on_microphone() -> bool {
 }
 
 fn default_self_correction_enabled() -> bool {
+    true
+}
+
+fn default_number_normalization_enabled() -> bool {
     true
 }
 
@@ -784,6 +790,7 @@ pub fn get_default_settings() -> AppSettings {
         custom_filler_words: None,
         self_correction_enabled: true,
         custom_correction_markers: None,
+        number_normalization_enabled: true,
         whisper_accelerator: WhisperAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),
         extra_recording_buffer_ms: 0,

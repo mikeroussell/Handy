@@ -1,6 +1,6 @@
 use crate::audio_toolkit::{
     apply_custom_words, apply_word_replacements, collapse_self_corrections,
-    filter_transcription_output,
+    filter_transcription_output, normalize_numbers,
 };
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
@@ -700,7 +700,14 @@ impl TranscriptionManager {
             filtered_result
         };
 
-        let final_result = self_corrected_result;
+        // Normalize spelled-out numbers to digits (e.g., "twenty three" -> "23")
+        let normalized_result = if settings.number_normalization_enabled {
+            normalize_numbers(&self_corrected_result)
+        } else {
+            self_corrected_result
+        };
+
+        let final_result = normalized_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");
