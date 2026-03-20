@@ -3,6 +3,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use strsim::levenshtein;
 
+use crate::settings::WordReplacement;
+
 /// Builds an n-gram string by cleaning and concatenating words
 ///
 /// Strips punctuation from each word, lowercases, and joins without spaces.
@@ -269,6 +271,226 @@ fn collapse_stutters(text: &str) -> String {
     }
 
     result.join(" ")
+}
+
+/// Returns default correction markers for English.
+/// These phrases signal that the speaker is correcting what they just said.
+fn get_default_correction_markers() -> &'static [&'static str] {
+    &[
+        "i mean",
+        "or rather",
+        "well actually",
+        "no wait",
+        "let me rephrase",
+        "what i meant was",
+        "scratch that",
+        "not that",
+        "correction",
+    ]
+}
+
+/// Splits text into clauses on punctuation boundaries (commas, dashes, semicolons, ellipses).
+/// Returns trimmed clause strings.
+fn split_into_clauses(text: &str) -> Vec<&str> {
+    static CLAUSE_BOUNDARY: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?:\s*[,;\u{2014}]\s*|\s*--\s*|\s*\.{2,}\s*|\s*\u{2026}\s*)").unwrap()
+    });
+
+    let mut clauses = Vec::new();
+    let mut last_end = 0;
+
+    for m in CLAUSE_BOUNDARY.find_iter(text) {
+        let clause = &text[last_end..m.start()];
+        if !clause.trim().is_empty() {
+            clauses.push(clause.trim());
+        }
+        last_end = m.end();
+    }
+
+    // Remaining text after last separator
+    let remainder = &text[last_end..];
+    if !remainder.trim().is_empty() {
+        clauses.push(remainder.trim());
+    }
+
+    clauses
+}
+
+/// Pass 1: Detect correction markers and remove the preceding clause.
+/// If punctuation boundaries exist, uses clause splitting. Otherwise, falls back
+/// to treating the marker itself as a boundary.
+fn collapse_marker_corrections(text: &str, markers: &[&str]) -> String {
+    if markers.is_empty() {
+        return text.to_string();
+    }
+
+    // Try punctuation-based clause splitting first
+    let clauses = split_into_clauses(text);
+
+    if clauses.len() >= 2 {
+        // Process clause-by-clause
+        let mut result_clauses: Vec<&str> = Vec::new();
+
+        for clause in &clauses {
+            let clause_lower = clause.to_lowercase();
+            let mut found_marker = false;
+
+            for marker in markers {
+                if clause_lower.starts_with(marker) {
+                    // This clause starts with a correction marker.
+                    // Remove the preceding clause (if any) and strip the marker.
+                    if !result_clauses.is_empty() {
+                        result_clauses.pop();
+                    }
+                    let after_marker = clause[marker.len()..].trim();
+                    if !after_marker.is_empty() {
+                        result_clauses.push(after_marker);
+                    }
+                    found_marker = true;
+                    break;
+                }
+            }
+
+            if !found_marker {
+                result_clauses.push(clause);
+            }
+        }
+
+        return result_clauses.join(", ").trim().to_string();
+    }
+
+    // Fallback: no punctuation boundaries found. Search for markers mid-text.
+    let text_lower = text.to_lowercase();
+    // Try markers from longest to shortest to avoid partial matches
+    let mut sorted_markers: Vec<&&str> = markers.iter().collect();
+    sorted_markers.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    for marker in sorted_markers {
+        if let Some(pos) = text_lower.find(marker) {
+            if pos == 0 {
+                // Marker at very start — no preceding clause to remove, skip
+                continue;
+            }
+            let after_marker = text[pos + marker.len()..].trim();
+            if !after_marker.is_empty() {
+                return after_marker.to_string();
+            }
+        }
+    }
+
+    text.to_string()
+}
+
+/// Pass 2: Detect false starts where the speaker abandons a clause and restarts.
+/// Criteria: adjacent clauses share opening 1-2 words and first clause is shorter.
+fn collapse_false_starts(text: &str) -> String {
+    let clauses = split_into_clauses(text);
+
+    if clauses.len() < 2 {
+        return text.to_string();
+    }
+
+    let mut result_clauses: Vec<&str> = Vec::new();
+
+    for clause in &clauses {
+        if let Some(prev) = result_clauses.last() {
+            let prev_words: Vec<&str> = prev.split_whitespace().collect();
+            let curr_words: Vec<&str> = clause.split_whitespace().collect();
+
+            // Check if they share the same opening words (case-insensitive)
+            // Short prev clauses (≤3 words) are likely fragments — single word match suffices.
+            // Longer prev clauses need 2-word match to avoid false positives on emphasis.
+            let shares_opener = if prev_words.is_empty() || curr_words.is_empty() {
+                false
+            } else if prev_words.len() <= 3 {
+                // Short fragment: first word match is enough
+                prev_words[0].to_lowercase() == curr_words[0].to_lowercase()
+            } else if curr_words.len() >= 2 {
+                // Longer clause: require first two words to match
+                prev_words[0].to_lowercase() == curr_words[0].to_lowercase()
+                    && prev_words[1].to_lowercase() == curr_words[1].to_lowercase()
+            } else {
+                prev_words[0].to_lowercase() == curr_words[0].to_lowercase()
+            };
+
+            // First clause must be shorter (incomplete thought restarted more fully)
+            let first_is_shorter = prev_words.len() < curr_words.len();
+
+            if shares_opener && first_is_shorter {
+                // Replace the previous clause with this one
+                result_clauses.pop();
+                result_clauses.push(clause);
+            } else {
+                result_clauses.push(clause);
+            }
+        } else {
+            result_clauses.push(clause);
+        }
+    }
+
+    result_clauses.join(", ").trim().to_string()
+}
+
+/// Collapses self-corrections in transcribed text.
+///
+/// Applies two passes:
+/// 1. Marker-based: detects correction phrases ("I mean", "scratch that", etc.)
+///    and removes the preceding clause
+/// 2. False-start: detects abandoned clauses restarted with the same opening words
+///
+/// # Arguments
+/// * `text` - The transcription text (should already have fillers removed)
+/// * `custom_correction_markers` - Optional custom marker list. `None` uses English defaults,
+///   `Some(empty)` disables marker detection, `Some(list)` overrides defaults.
+///
+/// # Returns
+/// The text with self-corrections collapsed
+pub fn collapse_self_corrections(
+    text: &str,
+    custom_correction_markers: &Option<Vec<String>>,
+) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    // Build marker list
+    let markers: Vec<&str> = match custom_correction_markers {
+        Some(custom) => custom.iter().map(|s| s.as_str()).collect(),
+        None => get_default_correction_markers().to_vec(),
+    };
+
+    // Pass 1: marker-based correction
+    let after_markers = collapse_marker_corrections(text, &markers);
+
+    // Pass 2: false-start detection
+    collapse_false_starts(&after_markers)
+}
+
+/// Applies exact word-boundary replacements to transcription text.
+///
+/// Unlike `apply_custom_words` which uses fuzzy/phonetic matching,
+/// this performs simple case-insensitive find-and-replace using
+/// user-defined from→to pairs.
+pub fn apply_word_replacements(text: &str, replacements: &[WordReplacement]) -> String {
+    if replacements.is_empty() {
+        return text.to_string();
+    }
+
+    let mut result = text.to_string();
+    for replacement in replacements {
+        let escaped = regex::escape(&replacement.from);
+        if let Ok(pattern) = Regex::new(&format!(r"(?i)\b{}\b", escaped)) {
+            result = pattern
+                .replace_all(&result, replacement.to.as_str())
+                .to_string();
+        }
+    }
+
+    // Clean up any double spaces from replacements
+    MULTI_SPACE_PATTERN
+        .replace_all(&result, " ")
+        .trim()
+        .to_string()
 }
 
 /// Filters transcription output by removing filler words and stutter artifacts.
@@ -557,5 +779,240 @@ mod tests {
             "got double-counted result: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_apply_word_replacements_basic() {
+        use crate::settings::WordReplacement;
+        let text = "I'm gonna do it";
+        let replacements = vec![WordReplacement {
+            from: "gonna".to_string(),
+            to: "going to".to_string(),
+        }];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I'm going to do it");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_case_insensitive() {
+        use crate::settings::WordReplacement;
+        let text = "I'm Gonna do it";
+        let replacements = vec![WordReplacement {
+            from: "gonna".to_string(),
+            to: "going to".to_string(),
+        }];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I'm going to do it");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_multiple() {
+        use crate::settings::WordReplacement;
+        let text = "I wanna go but I gotta stay";
+        let replacements = vec![
+            WordReplacement {
+                from: "wanna".to_string(),
+                to: "want to".to_string(),
+            },
+            WordReplacement {
+                from: "gotta".to_string(),
+                to: "got to".to_string(),
+            },
+        ];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I want to go but I got to stay");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_empty() {
+        let text = "hello world";
+        let replacements: Vec<crate::settings::WordReplacement> = vec![];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_no_partial_match() {
+        use crate::settings::WordReplacement;
+        let text = "the megaphone is here";
+        let replacements = vec![WordReplacement {
+            from: "mega".to_string(),
+            to: "super".to_string(),
+        }];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "the megaphone is here");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_multi_word_from() {
+        use crate::settings::WordReplacement;
+        let text = "I need to sort of figure this out";
+        let replacements = vec![WordReplacement {
+            from: "sort of".to_string(),
+            to: "somewhat".to_string(),
+        }];
+        let result = apply_word_replacements(text, &replacements);
+        assert_eq!(result, "I need to somewhat figure this out");
+    }
+
+    #[test]
+    fn test_apply_word_replacements_special_chars_no_panic() {
+        use crate::settings::WordReplacement;
+        let text = "I use c++ daily";
+        let replacements = vec![WordReplacement {
+            from: "c++".to_string(),
+            to: "C plus plus".to_string(),
+        }];
+        let result = apply_word_replacements(text, &replacements);
+        // \b word boundaries don't match around non-word chars like +,
+        // so this won't replace — but regex::escape ensures no panic
+        assert_eq!(result, "I use c++ daily");
+    }
+
+    #[test]
+    fn test_collapse_marker_basic() {
+        let result =
+            collapse_self_corrections("Send it to marketing, I mean send it to sales", &None);
+        assert_eq!(result, "send it to sales");
+    }
+
+    #[test]
+    fn test_collapse_marker_or_rather() {
+        let result =
+            collapse_self_corrections("The meeting is Tuesday, or rather it's Wednesday", &None);
+        assert_eq!(result, "it's Wednesday");
+    }
+
+    #[test]
+    fn test_collapse_marker_scratch_that() {
+        let result =
+            collapse_self_corrections("Open the file, scratch that, close the file", &None);
+        assert_eq!(result, "close the file");
+    }
+
+    #[test]
+    fn test_collapse_marker_case_insensitive() {
+        let result = collapse_self_corrections("Go left, I Mean go right", &None);
+        assert_eq!(result, "go right");
+    }
+
+    #[test]
+    fn test_collapse_marker_at_start_is_noop() {
+        let result = collapse_self_corrections("I mean this is the right way", &None);
+        assert_eq!(result, "I mean this is the right way");
+    }
+
+    #[test]
+    fn test_collapse_marker_multiple() {
+        let result = collapse_self_corrections("Go up, no wait go down, I mean go left", &None);
+        assert_eq!(result, "go left");
+    }
+
+    #[test]
+    fn test_collapse_marker_no_punctuation_fallback() {
+        let result =
+            collapse_self_corrections("Send it to marketing I mean send it to sales", &None);
+        assert_eq!(result, "send it to sales");
+    }
+
+    #[test]
+    fn test_collapse_marker_custom_markers() {
+        let custom = Some(vec!["oops".to_string()]);
+        let result =
+            collapse_self_corrections("Take the left turn, oops take the right turn", &custom);
+        assert_eq!(result, "take the right turn");
+    }
+
+    #[test]
+    fn test_collapse_marker_empty_custom_disables_markers() {
+        let custom = Some(vec![]);
+        let result = collapse_self_corrections("Go left, I mean go right", &custom);
+        // Marker detection disabled, but false-start detection still runs.
+        // These clauses don't share an opener so false-start won't fire either.
+        assert_eq!(result, "Go left, I mean go right");
+    }
+
+    #[test]
+    fn test_collapse_no_correction_passthrough() {
+        let result = collapse_self_corrections("This is a perfectly normal sentence.", &None);
+        assert_eq!(result, "This is a perfectly normal sentence.");
+    }
+
+    #[test]
+    fn test_collapse_empty_passthrough() {
+        let result = collapse_self_corrections("", &None);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_collapse_marker_with_em_dash() {
+        let result =
+            collapse_self_corrections("Send it to marketing\u{2014}I mean send it to sales", &None);
+        assert_eq!(result, "send it to sales");
+    }
+
+    #[test]
+    fn test_false_start_basic() {
+        let result =
+            collapse_self_corrections("We should probably... We need to ship by Friday", &None);
+        assert_eq!(result, "We need to ship by Friday");
+    }
+
+    #[test]
+    fn test_false_start_longer_first_clause_preserved() {
+        // First clause is longer — not a false start, it's emphasis or elaboration
+        let result = collapse_self_corrections(
+            "We absolutely need to ship this week, we need to ship",
+            &None,
+        );
+        assert_eq!(
+            result,
+            "We absolutely need to ship this week, we need to ship"
+        );
+    }
+
+    #[test]
+    fn test_false_start_different_opener_preserved() {
+        let result =
+            collapse_self_corrections("The budget is tight, we need more resources", &None);
+        assert_eq!(result, "The budget is tight, we need more resources");
+    }
+
+    #[test]
+    fn test_false_start_with_the() {
+        let result = collapse_self_corrections("The report, the quarterly report is ready", &None);
+        assert_eq!(result, "the quarterly report is ready");
+    }
+
+    #[test]
+    fn test_mixed_marker_and_false_start() {
+        // "I mean" removes "We should", then false-start collapses the repeated opener
+        let result = collapse_self_corrections(
+            "We should, I mean we need to, we need to ship by Friday",
+            &None,
+        );
+        assert_eq!(result, "we need to ship by Friday");
+    }
+
+    #[test]
+    fn test_collapse_marker_multi_sentence_fallback() {
+        // Fallback marker detection with no punctuation removes everything before the marker.
+        // For v1 this is acceptable since transcription fragments are typically single sentences.
+        let result =
+            collapse_self_corrections("The project is on track I mean we need more time", &None);
+        assert_eq!(result, "we need more time");
+    }
+
+    #[test]
+    fn test_integration_filler_then_self_correction() {
+        // Simulate the pipeline: filler removal first, then self-correction
+        let raw = "Send it to marketing, uh, I mean send it to sales";
+
+        // Step 1: filler removal (as the pipeline does)
+        let after_filler = filter_transcription_output(raw, "en", &None);
+
+        // Step 2: self-correction
+        let result = collapse_self_corrections(&after_filler, &None);
+        assert_eq!(result, "send it to sales");
     }
 }

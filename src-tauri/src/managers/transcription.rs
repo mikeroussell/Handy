@@ -1,4 +1,7 @@
-use crate::audio_toolkit::{apply_custom_words, filter_transcription_output};
+use crate::audio_toolkit::{
+    apply_custom_words, apply_word_replacements, collapse_self_corrections,
+    filter_transcription_output,
+};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
@@ -664,9 +667,16 @@ impl TranscriptionManager {
             result.text
         };
 
+        // Apply word replacements (exact from→to substitution)
+        let replaced_result = if !settings.word_replacements.is_empty() {
+            apply_word_replacements(&corrected_result, &settings.word_replacements)
+        } else {
+            corrected_result
+        };
+
         // Filter out filler words and hallucinations
         let filtered_result = filter_transcription_output(
-            &corrected_result,
+            &replaced_result,
             &settings.app_language,
             &settings.custom_filler_words,
         );
@@ -683,7 +693,14 @@ impl TranscriptionManager {
             translation_note
         );
 
-        let final_result = filtered_result;
+        // Collapse self-corrections (e.g., "send to marketing, I mean send to sales" -> "send to sales")
+        let self_corrected_result = if settings.self_correction_enabled {
+            collapse_self_corrections(&filtered_result, &settings.custom_correction_markers)
+        } else {
+            filtered_result
+        };
+
+        let final_result = self_corrected_result;
 
         if final_result.is_empty() {
             info!("Transcription result is empty");

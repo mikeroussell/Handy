@@ -304,6 +304,12 @@ impl Default for OrtAcceleratorSetting {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Type)]
+pub struct WordReplacement {
+    pub from: String,
+    pub to: String,
+}
+
 /* still handy for composing the initial JSON in the store ------------- */
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct AppSettings {
@@ -342,6 +348,8 @@ pub struct AppSettings {
     pub log_level: LogLevel,
     #[serde(default)]
     pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub word_replacements: Vec<WordReplacement>,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -393,6 +401,10 @@ pub struct AppSettings {
     pub external_script_path: Option<String>,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
+    #[serde(default = "default_self_correction_enabled")]
+    pub self_correction_enabled: bool,
+    #[serde(default)]
+    pub custom_correction_markers: Option<Vec<String>>,
     #[serde(default)]
     pub whisper_accelerator: WhisperAcceleratorSetting,
     #[serde(default)]
@@ -407,6 +419,10 @@ fn default_model() -> String {
 
 fn default_always_on_microphone() -> bool {
     false
+}
+
+fn default_self_correction_enabled() -> bool {
+    true
 }
 
 fn default_translate_to_english() -> bool {
@@ -739,6 +755,7 @@ pub fn get_default_settings() -> AppSettings {
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
+        word_replacements: Vec::new(),
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),
@@ -765,6 +782,8 @@ pub fn get_default_settings() -> AppSettings {
         typing_tool: default_typing_tool(),
         external_script_path: None,
         custom_filler_words: None,
+        self_correction_enabled: true,
+        custom_correction_markers: None,
         whisper_accelerator: WhisperAcceleratorSetting::default(),
         ort_accelerator: OrtAcceleratorSetting::default(),
         extra_recording_buffer_ms: 0,
