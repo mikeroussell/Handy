@@ -1,4 +1,7 @@
-use crate::audio_toolkit::{apply_custom_words, apply_word_replacements, collapse_self_corrections, filter_transcription_output};
+use crate::audio_toolkit::{
+    apply_custom_words, apply_word_replacements, collapse_self_corrections,
+    filter_transcription_output,
+};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
