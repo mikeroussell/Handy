@@ -397,10 +397,16 @@ fn collapse_false_starts(text: &str) -> String {
             let prev_words: Vec<&str> = prev.split_whitespace().collect();
             let curr_words: Vec<&str> = clause.split_whitespace().collect();
 
-            // Check if they share the same opening 1-2 words (case-insensitive)
+            // Check if they share the same opening words (case-insensitive)
+            // Short prev clauses (≤3 words) are likely fragments — single word match suffices.
+            // Longer prev clauses need 2-word match to avoid false positives on emphasis.
             let shares_opener = if prev_words.is_empty() || curr_words.is_empty() {
                 false
-            } else if prev_words.len() >= 2 && curr_words.len() >= 2 {
+            } else if prev_words.len() <= 3 {
+                // Short fragment: first word match is enough
+                prev_words[0].to_lowercase() == curr_words[0].to_lowercase()
+            } else if curr_words.len() >= 2 {
+                // Longer clause: require first two words to match
                 prev_words[0].to_lowercase() == curr_words[0].to_lowercase()
                     && prev_words[1].to_lowercase() == curr_words[1].to_lowercase()
             } else {
